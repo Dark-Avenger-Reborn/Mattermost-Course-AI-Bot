@@ -50,7 +50,7 @@ async def generate_response(
     # ── Step 2: Channel routing decision ─────────────────────────────────
     channel_context = ""
     if config.CONTEXT_CHANNEL_IDS:
-        channel_context = await _maybe_fetch_channel_context(question)
+        channel_context = await _maybe_fetch_channel_context(question, rag_chunks)
 
     # ── Step 3: Generate final answer ─────────────────────────────────────
     messages = answer_prompt(
@@ -71,11 +71,15 @@ async def generate_response(
     return answer
 
 
-async def _maybe_fetch_channel_context(question: str) -> str:
+async def _maybe_fetch_channel_context(question: str, rag_chunks: list[dict]) -> str:
     """
     Ask the LLM if channel context would help, then fetch it if so.
     Returns formatted channel context string (empty if not needed).
     """
+    if rag_chunks and not _question_needs_channel_context(question):
+        logger.info("Channel routing skipped: course material already provided an answer path")
+        return ""
+
     try:
         channel_summaries = await get_all_channel_summaries()
         routing_messages = channel_routing_prompt(question, channel_summaries)
@@ -110,6 +114,28 @@ async def _maybe_fetch_channel_context(question: str) -> str:
     except Exception as e:
         logger.warning("Channel routing failed, skipping: %s", e)
         return ""
+
+
+def _question_needs_channel_context(question: str) -> bool:
+    """Heuristic for questions that are likely answered by recent channel posts."""
+    lowered = question.lower()
+    cues = (
+        "announcement",
+        "announcements",
+        "posted",
+        "post",
+        "mentioned",
+        "said in class",
+        "in class",
+        "today",
+        "this week",
+        "last class",
+        "recent",
+        "zoom",
+        "office hours",
+        "deadline change",
+    )
+    return any(cue in lowered for cue in cues)
 
 
 def _parse_json_safe(text: str) -> dict | None:

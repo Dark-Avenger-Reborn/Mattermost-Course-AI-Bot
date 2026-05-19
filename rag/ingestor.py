@@ -14,6 +14,7 @@ Or call:  asyncio.run(ingest_all())
 import asyncio
 import hashlib
 import logging
+from html.parser import HTMLParser
 from pathlib import Path
 
 import chromadb
@@ -61,6 +62,33 @@ def reset_collection() -> None:
     except Exception:
         # The collection may not exist yet; treat that as already cleared.
         logger.info("ChromaDB collection course_material was already absent")
+
+
+async def ensure_collection_compatible(collection: chromadb.Collection) -> chromadb.Collection:
+    """Recreate the collection if its stored vector dimension differs from the active embedder."""
+    try:
+        sample = collection.get(include=["embeddings"], limit=1)
+    except Exception as e:
+        logger.warning("Could not inspect existing ChromaDB collection: %s", e)
+        return collection
+
+    embeddings = sample.get("embeddings")
+    if embeddings is None or len(embeddings) == 0:
+        return collection
+
+    existing_dim = len(embeddings[0])
+    current_dim = len((await embed(["dimension probe"]))[0])
+
+    if existing_dim == current_dim:
+        return collection
+
+    logger.warning(
+        "ChromaDB collection dimension %d does not match current embeddings %d; recreating collection",
+        existing_dim,
+        current_dim,
+    )
+    reset_collection()
+    return get_collection()
 
 
 # ── Text extraction ─────────────────────────────────────────────────────────
@@ -132,6 +160,45 @@ def extract_xlsx(path: Path) -> list[dict]:
         return []
 
 
+class _VisibleTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._skip_depth = 0
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style"}:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style"} and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+
+        text = data.strip()
+        if text:
+            self._parts.append(text)
+
+    def get_text(self) -> str:
+        return " ".join(self._parts).strip()
+
+
+def extract_html(path: Path) -> list[dict]:
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception as e:
+        logger.warning("Could not read %s as HTML: %s", path.name, e)
+        return []
+
+    parser = _VisibleTextParser()
+    parser.feed(raw)
+    text = parser.get_text()
+    return [{"page": 1, "text": text}] if text else []
+
+
 def extract_text(path: Path) -> list[dict]:
     """Generic fallback: read as UTF-8 text."""
     try:
@@ -151,12 +218,14 @@ _EXTRACTORS = {
     ".xlsx": extract_xlsx,
     ".xlsm": extract_xlsx,
     ".xlsb": extract_xlsx,
+    ".html": extract_html,
+    ".htm": extract_html,
 }
 
 # These are plain text — no special library needed
 _TEXT_SUFFIXES = {
     ".md", ".txt", ".csv", ".json", ".yaml", ".yml",
-    ".html", ".htm", ".xml", ".rst", ".tex",
+    ".xml", ".rst", ".tex",
     ".py", ".js", ".ts", ".java", ".c", ".cpp", ".h",
     ".sh", ".bat", ".ps1", ".r", ".sql",
 }
@@ -194,7 +263,7 @@ def extract_pages(path: Path) -> list[dict]:
 
 # ── Chunking ────────────────────────────────────────────────────────────────
 
-def chunk_text(text: str, chunk_size: int = 512, overlap: int = 64) -> list[str]:
+def chunk_text(text: str, chunk_size: int = 256, overlap: int = 32) -> list[str]:
     """
     Split text into overlapping word-count chunks.
     512 words ≈ 600-700 tokens — safe for bge-m3's 8192 token limit.
@@ -228,7 +297,11 @@ async def ingest_file(path: Path, collection: chromadb.Collection) -> int:
     all_chunks, all_ids, all_meta = [], [], []
     for page_data in pages:
         for idx, chunk in enumerate(chunk_text(page_data["text"])):
-            all_chunks.append(chunk)
+            chunk_text_with_header = (
+                f"Source: {source_name} | Page {page_data['page']} | Chunk {idx + 1}\n"
+                f"{chunk}"
+            )
+            all_chunks.append(chunk_text_with_header)
             all_ids.append(_chunk_id(source_name, page_data["page"], idx))
             all_meta.append({
                 "source": source_name,
@@ -277,7 +350,7 @@ async def ingest_all(material_path: str = config.COURSE_MATERIAL_PATH) -> dict:
         logger.warning("No files found in %s", path)
         return {"files": 0, "chunks": 0, "skipped": 0}
 
-    collection = get_collection()
+    collection = await ensure_collection_compatible(get_collection())
     total_chunks = 0
     skipped = 0
 
