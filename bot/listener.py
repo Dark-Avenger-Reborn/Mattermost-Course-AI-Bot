@@ -3,11 +3,19 @@ bot/listener.py — Mattermost WebSocket event handler.
 
 Connects to Mattermost via WebSocket, listens for posted messages,
 filters for mentions and DMs, and dispatches to the responder.
+
+Architecture note:
+  mattermostdriver calls loop.run_until_complete() internally for its WebSocket,
+  which conflicts with an already-running asyncio event loop. We solve this by
+  running the driver in a dedicated background thread with its own event loop.
+  Async work (LLM calls, RAG, etc.) is bridged back to the main loop via
+  asyncio.run_coroutine_threadsafe().
 """
 
 import asyncio
 import logging
 import re
+import threading
 
 from mattermostdriver import Driver
 
@@ -17,10 +25,11 @@ from llm.prompts import HELP_MESSAGE
 
 logger = logging.getLogger(__name__)
 
-# Global driver instance
+# Global state
 _driver: Driver | None = None
 _bot_user_id: str = ""
 _bot_username: str = ""
+_main_loop: asyncio.AbstractEventLoop | None = None  # the main asyncio loop
 
 
 def get_driver() -> Driver:
@@ -57,9 +66,41 @@ def _parse_url(url: str) -> dict:
     return {"scheme": scheme, "host": host, "port": port}
 
 
+def _run_driver_thread():
+    """
+    Entry point for the background thread.
+    Creates its own event loop so mattermostdriver can call
+    loop.run_until_complete() freely without conflicting with the main loop.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        driver = get_driver()
+        # Wrap the handler to catch exceptions
+        loop.run_until_complete(driver.init_websocket(_wrapped_event_handler))
+    except Exception as e:
+        logger.error("WebSocket error: %s", e, exc_info=True)
+    finally:
+        loop.close()
+
+
+async def _wrapped_event_handler(event):
+    """Wrapper that safely calls the main event handler with error handling."""
+    try:
+        await _handle_event(event)
+    except Exception as e:
+        logger.error("Error in event handler: %s", e, exc_info=True)
+
+
 async def connect():
-    """Log in and start the WebSocket listener."""
-    global _bot_user_id, _bot_username
+    """
+    Log in (sync, fine on main thread), then spin up the WebSocket
+    listener in a background thread to avoid event loop conflicts.
+    Blocks until the thread exits (i.e. runs forever).
+    """
+    global _bot_user_id, _bot_username, _main_loop
+
+    _main_loop = asyncio.get_running_loop()
 
     driver = get_driver()
     driver.login()
@@ -69,18 +110,45 @@ async def connect():
     _bot_username = me["username"]
     logger.info("Logged in as @%s (id=%s)", _bot_username, _bot_user_id)
 
-    logger.info("Starting WebSocket listener...")
-    await driver.init_websocket(_handle_event)
+    logger.info("Starting WebSocket listener thread...")
+
+    thread = threading.Thread(target=_run_driver_thread, daemon=True, name="mm-websocket")
+    thread.start()
+
+    # Keep the main coroutine alive while the thread runs
+    while thread.is_alive():
+        await asyncio.sleep(1)
 
 
 # ── Event dispatch ───────────────────────────────────────────────────────────
 
-async def _handle_event(event: dict):
-    """Top-level WebSocket event handler."""
+async def _handle_event(event):
+    """
+    Top-level WebSocket event handler — runs inside the driver thread's loop.
+    Dispatches real work to the main event loop so all async I/O
+    (httpx clients, ChromaDB, etc.) stays on one loop.
+    """
+    import json as _json
+    
+    # Handle case where event might be a string
+    if isinstance(event, str):
+        try:
+            event = _json.loads(event)
+        except Exception:
+            logger.debug("Failed to parse event as JSON: %s", event)
+            return
+    
+    if not isinstance(event, dict):
+        logger.debug("Event is not a dict: %s", type(event))
+        return
+    
     event_type = event.get("event")
 
     if event_type == "posted":
-        await _handle_post(event)
+        if _main_loop is None:
+            return
+        # Schedule the coroutine on the main loop from this thread
+        asyncio.run_coroutine_threadsafe(_handle_post(event), _main_loop)
 
 
 async def _handle_post(event: dict):

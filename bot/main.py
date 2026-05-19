@@ -44,16 +44,26 @@ async def main():
     log.info("Context channels: %d configured", len(config.CONTEXT_CHANNEL_IDS))
     log.info("=" * 60)
 
-    loop = asyncio.get_running_loop()
+    try:
+        loop = asyncio.get_running_loop()
 
-    def _signal_handler():
-        asyncio.ensure_future(_shutdown())
-        loop.stop()
+        def _signal_handler():
+            asyncio.ensure_future(_shutdown())
+            loop.stop()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _signal_handler)
+        # add_signal_handler is Unix-only; skip gracefully on Windows
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
 
-    await listener.connect()
+    except NotImplementedError:
+        # Windows — Ctrl+C will still raise KeyboardInterrupt and be caught below
+        pass
+
+    try:
+        await listener.connect()
+    except KeyboardInterrupt:
+        log.info("Interrupted, shutting down...")
+        await _shutdown()
 
 
 if __name__ == "__main__":
