@@ -1,8 +1,11 @@
 """
-rag/ingestor.py — Ingest course material (PDF, PPTX) into ChromaDB.
+rag/ingestor.py — Ingest course material into ChromaDB.
 
 Pipeline:
   file → extract text → chunk → embed (bge-m3) → upsert into ChromaDB
+
+Supported formats: PDF, PPTX, DOCX, XLSX/XLSM, MD, TXT, and most other
+plain-text formats (py, html, csv, json, etc.)
 
 Run via:  python scripts/ingest.py
 Or call:  asyncio.run(ingest_all())
@@ -11,7 +14,6 @@ Or call:  asyncio.run(ingest_all())
 import asyncio
 import hashlib
 import logging
-import re
 from pathlib import Path
 
 import chromadb
@@ -24,6 +26,21 @@ from llm.client import embed
 
 logger = logging.getLogger(__name__)
 
+# Max files being embedded concurrently — keep low to avoid 504s on the gateway
+_EMBED_SEMAPHORE = asyncio.Semaphore(2)
+
+# File types to skip entirely (binary, media, etc.)
+_SKIP_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".ico", ".webp",
+    ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv",
+    ".zip", ".tar", ".gz", ".rar", ".7z",
+    ".exe", ".dll", ".so", ".dylib",
+    ".pyc", ".pyo", "__pycache__",
+    ".DS_Store", ".gitignore", ".git",
+    ".db", ".sqlite", ".sqlite3",
+}
+
+
 # ── ChromaDB setup ──────────────────────────────────────────────────────────
 
 def get_collection() -> chromadb.Collection:
@@ -34,10 +51,21 @@ def get_collection() -> chromadb.Collection:
     )
 
 
+def reset_collection() -> None:
+    """Delete the course_material collection so the next ingest recreates it fresh."""
+    client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+
+    try:
+        client.delete_collection(name="course_material")
+        logger.info("Deleted ChromaDB collection course_material")
+    except Exception:
+        # The collection may not exist yet; treat that as already cleared.
+        logger.info("ChromaDB collection course_material was already absent")
+
+
 # ── Text extraction ─────────────────────────────────────────────────────────
 
 def extract_pdf(path: Path) -> list[dict]:
-    """Extract text per page from a PDF. Returns list of {page, text}."""
     doc = fitz.open(str(path))
     pages = []
     for i, page in enumerate(doc):
@@ -49,7 +77,6 @@ def extract_pdf(path: Path) -> list[dict]:
 
 
 def extract_pptx(path: Path) -> list[dict]:
-    """Extract text per slide from a PPTX. Returns list of {page, text}."""
     prs = Presentation(str(path))
     slides = []
     for i, slide in enumerate(prs.slides):
@@ -66,61 +93,144 @@ def extract_pptx(path: Path) -> list[dict]:
     return slides
 
 
+def extract_docx(path: Path) -> list[dict]:
+    try:
+        from docx import Document
+        doc = Document(str(path))
+        parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        text = "\n".join(parts).strip()
+        return [{"page": 1, "text": text}] if text else []
+    except ImportError:
+        logger.warning("python-docx not installed; skipping %s. Run: pip install python-docx", path.name)
+        return []
+
+
+def extract_xlsx(path: Path) -> list[dict]:
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(str(path), read_only=True, data_only=True)
+        pages = []
+        for si, name in enumerate(wb.sheetnames, 1):
+            ws = wb[name]
+            rows = []
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                if cells:
+                    rows.append("\t".join(cells))
+            text = "\n".join(rows).strip()
+            if text:
+                pages.append({"page": si, "text": f"[Sheet: {name}]\n{text}"})
+        wb.close()
+        return pages
+    except ImportError:
+        logger.warning("openpyxl not installed; skipping %s. Run: pip install openpyxl", path.name)
+        return []
+
+
+def extract_text(path: Path) -> list[dict]:
+    """Generic fallback: read as UTF-8 text."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore").strip()
+        return [{"page": 1, "text": text}] if text else []
+    except Exception as e:
+        logger.warning("Could not read %s as text: %s", path.name, e)
+        return []
+
+
+# Format dispatch table
+_EXTRACTORS = {
+    ".pdf":  extract_pdf,
+    ".pptx": extract_pptx,
+    ".ppt":  extract_pptx,
+    ".docx": extract_docx,
+    ".xlsx": extract_xlsx,
+    ".xlsm": extract_xlsx,
+    ".xlsb": extract_xlsx,
+}
+
+# These are plain text — no special library needed
+_TEXT_SUFFIXES = {
+    ".md", ".txt", ".csv", ".json", ".yaml", ".yml",
+    ".html", ".htm", ".xml", ".rst", ".tex",
+    ".py", ".js", ".ts", ".java", ".c", ".cpp", ".h",
+    ".sh", ".bat", ".ps1", ".r", ".sql",
+}
+
+
+def extract_pages(path: Path) -> list[dict]:
+    """Route a file to the right extractor. Returns [] if nothing to extract."""
+    suffix = path.suffix.lower()
+
+    if suffix in _SKIP_SUFFIXES or path.name.startswith("."):
+        return []
+
+    extractor = _EXTRACTORS.get(suffix)
+    if extractor:
+        try:
+            return extractor(path)
+        except Exception as e:
+            logger.warning("Extractor failed for %s (%s), trying text fallback", path.name, e)
+            return extract_text(path)
+
+    if suffix in _TEXT_SUFFIXES:
+        return extract_text(path)
+
+    # Unknown type — try text, silently skip if it looks binary
+    try:
+        text = path.read_text(encoding="utf-8", errors="strict").strip()
+        if text:
+            logger.debug("Read unknown type %s as plain text", path.name)
+            return [{"page": 1, "text": text}]
+    except (UnicodeDecodeError, Exception):
+        pass  # Binary file — skip silently
+
+    return []
+
+
 # ── Chunking ────────────────────────────────────────────────────────────────
 
 def chunk_text(text: str, chunk_size: int = 512, overlap: int = 64) -> list[str]:
     """
     Split text into overlapping word-count chunks.
-    chunk_size and overlap are in words (not tokens).
-    bge-m3 handles up to ~8192 tokens; 512 words ≈ 600-700 tokens, safe.
+    512 words ≈ 600-700 tokens — safe for bge-m3's 8192 token limit.
     """
     words = text.split()
-    chunks = []
-    start = 0
+    chunks, start = [], 0
     while start < len(words):
-        end = start + chunk_size
-        chunk = " ".join(words[start:end])
-        chunks.append(chunk)
+        chunks.append(" ".join(words[start : start + chunk_size]))
         start += chunk_size - overlap
     return chunks
 
 
 def _chunk_id(source: str, page: int, chunk_idx: int) -> str:
-    raw = f"{source}::p{page}::c{chunk_idx}"
-    return hashlib.md5(raw.encode()).hexdigest()
+    return hashlib.md5(f"{source}::p{page}::c{chunk_idx}".encode()).hexdigest()
 
 
-# ── Main ingest pipeline ────────────────────────────────────────────────────
+# ── Ingest pipeline ─────────────────────────────────────────────────────────
 
 async def ingest_file(path: Path, collection: chromadb.Collection) -> int:
-    """Ingest a single file. Returns number of chunks added."""
-    suffix = path.suffix.lower()
-    source_name = path.name
-
-    if suffix == ".pdf":
-        pages = extract_pdf(path)
-    elif suffix in (".pptx", ".ppt"):
-        pages = extract_pptx(path)
-    else:
-        logger.warning("Skipping unsupported file type: %s", path)
-        return 0
-
+    """
+    Ingest a single file. Returns number of chunks added.
+    Uses a semaphore to cap concurrent embedding calls.
+    """
+    pages = extract_pages(path)
     if not pages:
-        logger.warning("No text extracted from %s", path)
         return 0
 
-    # Build all chunks with metadata
-    all_chunks: list[str] = []
-    all_ids: list[str] = []
-    all_metadata: list[dict] = []
+    source_name = path.name
+    suffix = path.suffix.lower()
 
+    all_chunks, all_ids, all_meta = [], [], []
     for page_data in pages:
-        chunks = chunk_text(page_data["text"])
-        for idx, chunk in enumerate(chunks):
-            cid = _chunk_id(source_name, page_data["page"], idx)
+        for idx, chunk in enumerate(chunk_text(page_data["text"])):
             all_chunks.append(chunk)
-            all_ids.append(cid)
-            all_metadata.append({
+            all_ids.append(_chunk_id(source_name, page_data["page"], idx))
+            all_meta.append({
                 "source": source_name,
                 "page": page_data["page"],
                 "chunk_index": idx,
@@ -129,51 +239,61 @@ async def ingest_file(path: Path, collection: chromadb.Collection) -> int:
 
     if not all_chunks:
         return 0
+    
+    print(f"📄 {source_name}: {len(pages)} page(s) → {len(all_chunks)} chunk(s)")
 
-    # Embed in batches and upsert
-    EMBED_BATCH = 32
-    for i in range(0, len(all_chunks), EMBED_BATCH):
-        batch_texts = all_chunks[i : i + EMBED_BATCH]
-        batch_ids = all_ids[i : i + EMBED_BATCH]
-        batch_meta = all_metadata[i : i + EMBED_BATCH]
+    EMBED_BATCH = 16
+    async with _EMBED_SEMAPHORE:
+        for i in range(0, len(all_chunks), EMBED_BATCH):
+            b_texts = all_chunks[i : i + EMBED_BATCH]
+            b_ids   = all_ids[i : i + EMBED_BATCH]
+            b_meta  = all_meta[i : i + EMBED_BATCH]
 
-        vectors = await embed(batch_texts)
+            try:
+                vectors = await embed(b_texts)
+            except Exception as e:
+                logger.error("Embedding failed for %s batch %d: %s — skipping batch", source_name, i, e)
+                continue  # skip this batch, keep going with the rest of the file
 
-        collection.upsert(
-            ids=batch_ids,
-            embeddings=vectors,
-            documents=batch_texts,
-            metadatas=batch_meta,
-        )
+            collection.upsert(ids=b_ids, embeddings=vectors, documents=b_texts, metadatas=b_meta)
 
-    logger.info("Ingested %s: %d chunks from %d pages", source_name, len(all_chunks), len(pages))
+    logger.info("Ingested %-40s  %3d chunks from %d page(s)", source_name, len(all_chunks), len(pages))
+    print(f"✅ {source_name}: {len(all_chunks)} chunks")
     return len(all_chunks)
 
 
 async def ingest_all(material_path: str = config.COURSE_MATERIAL_PATH) -> dict:
     """
-    Ingest all PDFs and PPTXs from the course material directory.
-    Returns a summary dict.
+    Ingest all supported files from the course material directory.
+    Returns {"files": N, "chunks": N, "skipped": N}.
     """
     path = Path(material_path)
     if not path.exists():
         path.mkdir(parents=True)
         logger.info("Created course material directory: %s", path)
 
-    files = list(path.glob("**/*.pdf")) + list(path.glob("**/*.pptx")) + list(path.glob("**/*.ppt"))
-
-    if not files:
-        logger.warning("No course material files found in %s", path)
-        return {"files": 0, "chunks": 0}
+    all_files = [p for p in path.rglob("*") if p.is_file()]
+    if not all_files:
+        logger.warning("No files found in %s", path)
+        return {"files": 0, "chunks": 0, "skipped": 0}
 
     collection = get_collection()
     total_chunks = 0
+    skipped = 0
 
-    for f in tqdm(files, desc="Ingesting course material"):
-        chunks = await ingest_file(f, collection)
-        total_chunks += chunks
+    for f in tqdm(all_files, desc="Ingesting course material"):
+        try:
+            chunks = await ingest_file(f, collection)
+            if chunks == 0:
+                skipped += 1
+            else:
+                total_chunks += chunks
+        except Exception as e:
+            logger.error("Unexpected error ingesting %s: %s", f.name, e)
+            skipped += 1
 
-    summary = {"files": len(files), "chunks": total_chunks}
+    ingested_files = len(all_files) - skipped
+    summary = {"files": ingested_files, "chunks": total_chunks, "skipped": skipped}
     logger.info("Ingestion complete: %s", summary)
     return summary
 
@@ -184,5 +304,4 @@ def list_sources() -> list[str]:
     results = collection.get(include=["metadatas"])
     if not results or not results.get("metadatas"):
         return []
-    sources = sorted({m["source"] for m in results["metadatas"] if m})
-    return sources
+    return sorted({m["source"] for m in results["metadatas"] if m})

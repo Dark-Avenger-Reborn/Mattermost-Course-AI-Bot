@@ -27,7 +27,7 @@ logging.getLogger("chromadb").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 import config
-from rag.ingestor import get_collection, ingest_all, list_sources
+from rag.ingestor import ingest_all, list_sources, reset_collection
 
 
 async def main():
@@ -38,13 +38,8 @@ async def main():
 
     if args.clear:
         print("⚠️  Clearing existing course material from ChromaDB...")
-        collection = get_collection()
-        all_ids = collection.get()["ids"]
-        if all_ids:
-            collection.delete(ids=all_ids)
-            print(f"   Deleted {len(all_ids)} existing chunks.")
-        else:
-            print("   Collection was already empty.")
+        reset_collection()
+        print("   Deleted the course_material collection.")
 
     print(f"\n📂 Ingesting from: {args.path}")
     summary = await ingest_all(material_path=args.path)

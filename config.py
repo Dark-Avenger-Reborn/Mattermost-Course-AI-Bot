@@ -35,6 +35,11 @@ CHAT_MODEL: str = os.getenv("CHAT_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-
 EMBED_MODEL: str = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
 RERANK_MODEL: str = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 
+# Use local embeddings instead of remote API if set (true/false)
+LOCAL_EMBEDDINGS: bool = os.getenv("LOCAL_EMBEDDINGS", "false").lower() in ("1", "true", "yes")
+# Local embedding model name for sentence-transformers (only used when LOCAL_EMBEDDINGS is true)
+LOCAL_EMBED_MODEL: str = os.getenv("LOCAL_EMBED_MODEL", "all-MiniLM-L6-v2")
+
 # ── Course identity ─────────────────────────────────────────────────────────
 COURSE_NAME: str = os.getenv("COURSE_NAME", "This Course")
 COURSE_DESCRIPTION: str = os.getenv("COURSE_DESCRIPTION", "")

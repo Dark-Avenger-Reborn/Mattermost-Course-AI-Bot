@@ -17,6 +17,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Lazy-loaded local embedding model (SentenceTransformer)
+_local_embed_model = None
+
 # Shared async HTTP client (reused across all calls)
 _http: httpx.AsyncClient | None = None
 
@@ -79,6 +82,36 @@ async def embed(texts: list[str], model: str = config.EMBED_MODEL) -> list[list[
     Embed a list of strings. Returns a list of float vectors.
     Batches automatically if the list is large.
     """
+    # If configured to use local embeddings, use sentence-transformers
+    if config.LOCAL_EMBEDDINGS:
+        global _local_embed_model
+        try:
+            from sentence_transformers import SentenceTransformer
+            import numpy as _np
+        except Exception as e:
+            raise RuntimeError("Local embeddings requested but sentence-transformers is not installed") from e
+
+        if _local_embed_model is None:
+            _local_embed_model = SentenceTransformer(config.LOCAL_EMBED_MODEL)
+
+        BATCH = 64
+        all_vectors: list[list[float]] = []
+
+        for i in range(0, len(texts), BATCH):
+            batch = texts[i : i + BATCH]
+            # Run encoding in a thread to avoid blocking the event loop
+            vecs = await asyncio.to_thread(_local_embed_model.encode, batch, show_progress_bar=False)
+
+            # sentence-transformers may return numpy arrays
+            for v in vecs:
+                if isinstance(v, _np.ndarray):
+                    all_vectors.append(v.tolist())
+                else:
+                    all_vectors.append(list(v))
+
+        return all_vectors
+
+    # Default: remote HTTP embeddings via UB/LiteLLM
     http = _get_http()
     BATCH = 64  # bge-m3 handles up to 8192 tokens per text; batch by count
 
