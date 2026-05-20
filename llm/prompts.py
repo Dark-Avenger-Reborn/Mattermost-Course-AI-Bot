@@ -26,9 +26,9 @@ simply giving answers away.
 
 ## How to Answer
 - Ground your answers in the provided course material context first
-- Treat channel posts as supplemental context, not the primary source, unless \
-    the question explicitly asks about a recent announcement, class discussion, or \
-    something only channels would contain
+- Treat channel posts as useful content, not every channels dicription and name matches up with the content inside \
+  that channel, their is no harm into looking at the posts even if you are not sure it would be helpful, you might find some useful information in there that can help you answer the question better
+  If not, you can always just ignore the channel content and answer based on the course material, but you should not ignore potentially useful context just because the channel name doesn't seem relevant
 - If you are not sure, say so honestly — never hallucinate facts or make up \
   assignment details
 - For code questions: explain *why*, not just *what*
@@ -82,6 +82,9 @@ def channel_routing_prompt(question: str, channel_summaries: str) -> list[dict]:
 
 The following Mattermost channels are available for context:
 {channel_summaries}
+
+The channel discriptions do not always match the content inside, so even if a channel doesn't seem relevant based on its name or description, it might still contain useful information. You should consider whether the content of any channels could help answer the question, rather than just relying on the channel summaries.
+Their is no harm at all into looking at the posts inside the channels, even if you are unsure
 
 Decide whether reading any of these channels would help answer the question.
 Respond with this exact JSON structure:

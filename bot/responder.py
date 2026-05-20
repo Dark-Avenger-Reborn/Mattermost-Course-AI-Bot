@@ -76,9 +76,6 @@ async def _maybe_fetch_channel_context(question: str, rag_chunks: list[dict]) ->
     Ask the LLM if channel context would help, then fetch it if so.
     Returns formatted channel context string (empty if not needed).
     """
-    if rag_chunks and not _question_needs_channel_context(question):
-        logger.info("Channel routing skipped: course material already provided an answer path")
-        return ""
 
     try:
         channel_summaries = await get_all_channel_summaries()
@@ -88,9 +85,10 @@ async def _maybe_fetch_channel_context(question: str, rag_chunks: list[dict]) ->
             routing_messages,
             model=config.CHAT_MODEL,
             temperature=0.0,
-            max_tokens=200,
+            max_tokens=20000,
         )
 
+        print("Channel routing response:", routing_response)
         # Parse the JSON routing decision
         decision = _parse_json_safe(routing_response)
 

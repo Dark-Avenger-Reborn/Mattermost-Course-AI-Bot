@@ -220,6 +220,8 @@ async def _handle_post(event: dict):
         # Reply in thread
         _post_reply(channel_id, root_id, answer)
 
+        print("LLM returned final answer")
+
     except Exception as e:
         logger.exception("Error generating response: %s", e)
         _post_reply(
