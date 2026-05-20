@@ -21,6 +21,7 @@ from mattermostdriver import Driver
 
 import config
 from bot import responder
+from bot.channel_reader import build_image_inputs_from_file_ids
 from llm.prompts import HELP_MESSAGE
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,7 @@ async def _handle_post(event: dict):
     post_id: str = post.get("id", "")
     root_id: str = post.get("root_id") or post_id  # thread root
     user_id: str = post.get("user_id", "")
+    file_ids: list[str] = post.get("file_ids") or []
     channel_type: str = data.get("channel_type", "")  # "D" = DM, "O"/"P" = channel
 
     # Determine if we should respond:
@@ -211,10 +213,20 @@ async def _handle_post(event: dict):
         # Fetch thread history for context (if this is a reply in a thread)
         conversation_history = await _get_thread_history(root_id, post_id)
 
+        # Extract image attachments (screenshots, photos, diagrams) for multimodal models.
+        image_inputs: list[dict] = []
+        if config.MM_ENABLE_IMAGE_INPUT and file_ids:
+            image_inputs = await build_image_inputs_from_file_ids(
+                file_ids,
+                max_images=config.MM_MAX_IMAGES_PER_MESSAGE,
+                max_image_bytes=config.MM_MAX_IMAGE_BYTES,
+            )
+
         # Generate response
         answer = await responder.generate_response(
             question=question,
             conversation_history=conversation_history,
+            image_inputs=image_inputs,
         )
 
         # Reply in thread

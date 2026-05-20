@@ -71,8 +71,24 @@ async def chat(
     resp = await http.post("/chat/completions", json=payload)
     resp.raise_for_status()
     data = resp.json()
+    content = data.get("choices", [{}])[0].get("message", {}).get("content")
 
-    return data["choices"][0]["message"]["content"].strip()
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        return content.strip()
+
+    # Some OpenAI-compatible providers can return structured content parts.
+    if isinstance(content, list):
+        text_parts = [
+            p.get("text", "")
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        ]
+        return "\n".join(t for t in text_parts if t).strip()
+
+    return str(content).strip()
 
 
 # ── Embeddings ──────────────────────────────────────────────────────────────

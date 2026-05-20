@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 async def generate_response(
     question: str,
     conversation_history: list[dict] | None = None,
+    image_inputs: list[dict] | None = None,
 ) -> str:
     """
     Full pipeline: question → answer string.
@@ -59,10 +60,15 @@ async def generate_response(
         rag_context=rag_context,
         channel_context=channel_context,
         conversation_history=conversation_history,
+        image_inputs=image_inputs,
     )
 
     logger.info("Calling LLM for final answer...")
     answer = await chat(messages, temperature=0.3, max_tokens=1024)
+
+    if not answer.strip():
+        logger.warning("LLM returned empty response")
+        return "I couldn't generate a complete answer just now. Please try rephrasing your question or sending it again."
 
     # Append source attribution if we used RAG
     if rag_chunks or channel_names:

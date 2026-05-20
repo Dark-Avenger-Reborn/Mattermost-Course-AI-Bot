@@ -69,6 +69,22 @@ python -m bot.main
 
 The bot only reads channels it is a member of. Add it to channels in Mattermost, then list those channel IDs in `.env` under `CONTEXT_CHANNEL_IDS`.
 
+## Image Attachments (Screenshots)
+
+The bot can pass attached images (screenshots, photos, diagrams) to a multimodal chat model.
+
+- Supported input: Mattermost post attachments with image MIME types (`image/*`)
+- The bot converts images to data URLs and includes them in the chat request
+- Non-image files are ignored
+
+Environment variables:
+
+- `MM_ENABLE_IMAGE_INPUT` (default: `true`)
+- `MM_MAX_IMAGES_PER_MESSAGE` (default: `3`)
+- `MM_MAX_IMAGE_BYTES` (default: `5000000`)
+
+If your selected `CHAT_MODEL` is text-only, image attachments will still be sent but may be ignored by the model/provider.
+
 ## Commands
 
 These work in DMs or any channel the bot is in:

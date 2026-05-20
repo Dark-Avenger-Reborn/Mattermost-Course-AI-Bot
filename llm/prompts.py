@@ -112,6 +112,7 @@ def answer_prompt(
     rag_context: str,
     channel_context: str = "",
     conversation_history: list[dict] | None = None,
+    image_inputs: list[dict] | None = None,
 ) -> list[dict]:
     """
     Build the full messages list for the final answer generation.
@@ -160,7 +161,11 @@ information (office hours, the instructor, specific resources)."""
 No specific course material was retrieved for this question. Answer as best you can \
 from general knowledge, but be clear about what is general knowledge vs. course-specific."""
 
-    messages.append({"role": "user", "content": user_content})
+    if image_inputs:
+        user_parts = [{"type": "text", "text": user_content}, *image_inputs]
+        messages.append({"role": "user", "content": user_parts})
+    else:
+        messages.append({"role": "user", "content": user_content})
     return messages
 
 

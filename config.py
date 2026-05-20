@@ -52,6 +52,11 @@ CHANNEL_FETCH_LIMIT: int = int(os.getenv("CHANNEL_FETCH_LIMIT", "50"))
 # ── Admin users ─────────────────────────────────────────────────────────────
 ADMIN_USERNAMES: list[str] = _csv("ADMIN_USERNAMES")
 
+# ── Multimodal (image attachments) ──────────────────────────────────────────
+MM_ENABLE_IMAGE_INPUT: bool = os.getenv("MM_ENABLE_IMAGE_INPUT", "true").lower() in ("1", "true", "yes")
+MM_MAX_IMAGES_PER_MESSAGE: int = int(os.getenv("MM_MAX_IMAGES_PER_MESSAGE", "3"))
+MM_MAX_IMAGE_BYTES: int = int(os.getenv("MM_MAX_IMAGE_BYTES", "5000000"))
+
 # ── RAG ─────────────────────────────────────────────────────────────────────
 CHROMA_PATH: str = os.getenv("CHROMA_PATH", "./chroma_db")
 COURSE_MATERIAL_PATH: str = os.getenv("COURSE_MATERIAL_PATH", "./course_material")

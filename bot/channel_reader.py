@@ -7,6 +7,7 @@ one-off fetches, not a persistent connection.
 
 import json
 import logging
+import base64
 from datetime import datetime, timezone
 
 import httpx
@@ -37,6 +38,60 @@ async def close():
     global _mm_http
     if _mm_http and not _mm_http.is_closed:
         await _mm_http.aclose()
+
+
+async def build_image_inputs_from_file_ids(
+    file_ids: list[str],
+    *,
+    max_images: int,
+    max_image_bytes: int,
+) -> list[dict]:
+    """
+    Convert Mattermost file attachments into OpenAI-compatible image input parts.
+
+    Returns content parts shaped like:
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+    """
+    http = _get_mm_http()
+    image_parts: list[dict] = []
+
+    for file_id in file_ids:
+        if len(image_parts) >= max_images:
+            break
+
+        try:
+            info_resp = await http.get(f"/files/{file_id}/info")
+            info_resp.raise_for_status()
+            info = info_resp.json()
+
+            mime_type = (info.get("mime_type") or "").lower()
+            if not mime_type.startswith("image/"):
+                continue
+
+            size = int(info.get("size") or 0)
+            if size > max_image_bytes:
+                logger.info(
+                    "Skipping image %s (%d bytes): exceeds MM_MAX_IMAGE_BYTES=%d",
+                    file_id,
+                    size,
+                    max_image_bytes,
+                )
+                continue
+
+            file_resp = await http.get(f"/files/{file_id}")
+            file_resp.raise_for_status()
+            encoded = base64.b64encode(file_resp.content).decode("ascii")
+            data_url = f"data:{mime_type};base64,{encoded}"
+
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            })
+
+        except Exception as e:
+            logger.warning("Failed to process attachment %s as image: %s", file_id, e)
+
+    return image_parts
 
 
 # ── Channel metadata ────────────────────────────────────────────────────────
