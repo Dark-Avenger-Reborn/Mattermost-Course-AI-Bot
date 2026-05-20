@@ -13,7 +13,7 @@ import logging
 import re
 
 import config
-from bot.channel_reader import fetch_channels_context, get_all_channel_summaries
+from bot.channel_reader import fetch_channels_context, get_all_channel_summaries, get_channel_info
 from llm.client import chat
 from llm.prompts import answer_prompt, channel_routing_prompt
 from rag.ingestor import list_sources
@@ -49,8 +49,9 @@ async def generate_response(
 
     # ── Step 2: Channel routing decision ─────────────────────────────────
     channel_context = ""
+    channel_names: list[str] = []
     if config.CONTEXT_CHANNEL_IDS:
-        channel_context = await _maybe_fetch_channel_context(question, rag_chunks)
+        channel_context, channel_names = await _maybe_fetch_channel_context(question, rag_chunks)
 
     # ── Step 3: Generate final answer ─────────────────────────────────────
     messages = answer_prompt(
@@ -64,14 +65,20 @@ async def generate_response(
     answer = await chat(messages, temperature=0.3, max_tokens=1024)
 
     # Append source attribution if we used RAG
-    if rag_chunks:
-        sources_used = sorted({c["source"] for c in rag_chunks})
-        answer += "\n\n---\n📎 *Sources: " + ", ".join(f"`{s}`" for s in sources_used) + "*"
+    if rag_chunks or channel_names:
+        sources_used = sorted({c["source"] for c in rag_chunks}) if rag_chunks else []
+        parts: list[str] = []
+        if sources_used:
+            parts.append(", ".join(f"`{s}`" for s in sources_used))
+        if channel_names:
+            parts.append(", ".join(f"#{n}" for n in channel_names))
+        if parts:
+            answer += "\n\n---\n📎 *Sources: " + ", ".join(parts) + "*"
 
     return answer
 
 
-async def _maybe_fetch_channel_context(question: str, rag_chunks: list[dict]) -> str:
+async def _maybe_fetch_channel_context(question: str, rag_chunks: list[dict]) -> tuple[str, list[str]]:
     """
     Ask the LLM if channel context would help, then fetch it if so.
     Returns formatted channel context string (empty if not needed).
@@ -94,7 +101,7 @@ async def _maybe_fetch_channel_context(question: str, rag_chunks: list[dict]) ->
 
         if not decision or not decision.get("needs_channels"):
             logger.info("Channel routing: not needed (%s)", decision.get("reason", "?") if decision else "parse error")
-            return ""
+            return "", []
 
         channel_ids = decision.get("channel_ids", [])
 
@@ -104,14 +111,24 @@ async def _maybe_fetch_channel_context(question: str, rag_chunks: list[dict]) ->
 
         if not channel_ids:
             logger.info("Channel routing: needed but no valid IDs returned")
-            return ""
+            return "", []
 
         logger.info("Channel routing: fetching %d channels: %s", len(channel_ids), channel_ids)
-        return await fetch_channels_context(channel_ids)
+        # Resolve display names for the header
+        channel_names: list[str] = []
+        for cid in channel_ids:
+            info = await get_channel_info(cid)
+            if info:
+                channel_names.append(info.get("display_name") or info.get("name", cid))
+            else:
+                channel_names.append(cid)
+
+        context = await fetch_channels_context(channel_ids)
+        return context, channel_names
 
     except Exception as e:
         logger.warning("Channel routing failed, skipping: %s", e)
-        return ""
+        return "", []
 
 
 def _question_needs_channel_context(question: str) -> bool:
