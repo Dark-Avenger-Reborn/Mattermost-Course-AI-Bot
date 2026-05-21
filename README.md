@@ -50,7 +50,7 @@ Drop course files into `course_material/` then run:
 python scripts/ingest.py
 ```
 
-# Supported and Unsupported File Formats
+Supported and Unsupported File Formats
 
 | **Supported Formats**                                      | **Not Supported (Skipped or Ignored)**                                     |
 |------------------------------------------------------------|----------------------------------------------------------------------------|
