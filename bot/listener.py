@@ -268,6 +268,10 @@ async def _handle_commands(
         answer = await responder.handle_sources_command()
         _post_reply(channel_id, root_id, answer)
         return True
+    
+    if cmd == "ping":
+        _post_reply(channel_id, root_id, "Pong! 🏓")
+        return True
 
     if cmd == "reload":
         username = _get_username(user_id)
