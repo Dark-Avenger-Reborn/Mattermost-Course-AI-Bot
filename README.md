@@ -45,10 +45,32 @@ cp .env.example .env
 ```
 
 ### 3. Ingest course material
-Drop PDFs and PPTX files into `course_material/` then run:
+Drop course files into `course_material/` then run:
 ```bash
 python scripts/ingest.py
 ```
+
+# Supported and Unsupported File Formats
+
+| **Supported Formats**                                      | **Not Supported (Skipped or Ignored)**                                     |
+|------------------------------------------------------------|----------------------------------------------------------------------------|
+| PDF: `.pdf`                                                | Images: `.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.svg`, `.ico`, `.webp`   |
+| PowerPoint: `.pptx`, `.ppt`                                | Audio/Video: `.mp3`, `.mp4`, `.wav`, `.avi`, `.mov`, `.mkv`                |
+| Word: `.docx`                                              | Archives: `.zip`, `.tar`, `.gz`, `.rar`, `.7z`                             |
+| Excel: `.xlsx`, `.xlsm`, `.xlsb`                           | Executables/Libraries: `.exe`, `.dll`, `.so`, `.dylib`                     |
+| HTML: `.html`, `.htm`                                      | Python cache: `.pyc`, `.pyo`, `__pycache__`                                |
+| Markdown: `.md`                                            | Misc: `.DS_Store`, `.gitignore`, `.git`, `.db`, `.sqlite`, `.sqlite3`      |
+| Plain text: `.txt`, `.csv`, `.json`, `.yaml`, `.yml`,      | **Files starting with a dot (`.`)** (e.g., `.env`, `.config`)              |
+| `.xml`, `.rst`, `.tex`                                     | **Binary files or files unreadable as UTF-8**                              |
+| Source/code/scripts: `.py`, `.js`, `.ts`, `.java`, `.c`,   |                                                                            |
+| `.cpp`, `.h`, `.sh`, `.bat`, `.ps1`, `.r`, `.sql`          |                                                                            |
+| **Any unknown text-readable file**                         |                                                                            |
+
+> **Note:**  
+> - Files not explicitly listed as supported are attempted as UTF-8 text—if not readable, they are ignored/skipped.  
+> - Binary and media files are skipped to avoid ingesting non-text data.  
+> - Files and folders starting with a dot (.) are skipped by default.
+
 
 ### 4. Run the bot
 ```bash
@@ -94,3 +116,4 @@ These work in DMs or any channel the bot is in:
 | `@bot help` | Show help message |
 | `@bot reload` | Re-ingest course material (admin only) |
 | `@bot sources` | Show what course documents are loaded |
+| `@bot ping` | Responds with `Pong! 🏓` if Online |
