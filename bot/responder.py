@@ -26,6 +26,7 @@ async def generate_response(
     question: str,
     conversation_history: list[dict] | None = None,
     image_inputs: list[dict] | None = None,
+    text_inputs: list[dict] | None = None,
 ) -> str:
     """
     Full pipeline: question → answer string.
@@ -61,6 +62,7 @@ async def generate_response(
         channel_context=channel_context,
         conversation_history=conversation_history,
         image_inputs=image_inputs,
+        text_inputs=text_inputs,
     )
 
     logger.info("Calling LLM for final answer...")

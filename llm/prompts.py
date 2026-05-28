@@ -113,6 +113,7 @@ def answer_prompt(
     channel_context: str = "",
     conversation_history: list[dict] | None = None,
     image_inputs: list[dict] | None = None,
+    text_inputs: list[dict] | None = None,
 ) -> list[dict]:
     """
     Build the full messages list for the final answer generation.
@@ -161,9 +162,16 @@ information (office hours, the instructor, specific resources)."""
 No specific course material was retrieved for this question. Answer as best you can \
 from general knowledge, but be clear about what is general knowledge vs. course-specific."""
 
-    if image_inputs:
-        user_parts = [{"type": "text", "text": user_content}, *image_inputs]
-        messages.append({"role": "user", "content": user_parts})
+    # Merge multimodal parts: base user text, then any extracted text parts, then images
+    if image_inputs or text_inputs:
+        parts: list[dict] = [{"type": "text", "text": user_content}]
+        if text_inputs:
+            # Normalize extracted text parts to the expected shape
+            for t in text_inputs:
+                parts.append({"type": "text", "text": f"(From attachment {t.get('filename','')})\n\n{t.get('text','')}",})
+        if image_inputs:
+            parts.extend(image_inputs)
+        messages.append({"role": "user", "content": parts})
     else:
         messages.append({"role": "user", "content": user_content})
     return messages

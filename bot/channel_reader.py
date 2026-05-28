@@ -13,6 +13,10 @@ from datetime import datetime, timezone
 import httpx
 
 import config
+import io
+import fitz  # pymupdf
+from pptx import Presentation
+from docx import Document
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +96,100 @@ async def build_image_inputs_from_file_ids(
             logger.warning("Failed to process attachment %s as image: %s", file_id, e)
 
     return image_parts
+
+
+async def build_text_inputs_from_file_ids(
+    file_ids: list[str],
+    *,
+    max_files: int = 3,
+    max_bytes: int = 10_000_000,
+) -> list[dict]:
+    """
+    Download attachments and extract text where possible (PDF, PPTX, DOCX, TXT).
+
+    Returns list of parts shaped like: {"type": "text_part", "filename": "x.pdf", "text": "..."}
+    """
+    http = _get_mm_http()
+    text_parts: list[dict] = []
+
+    for file_id in file_ids:
+        if len(text_parts) >= max_files:
+            break
+        try:
+            info_resp = await http.get(f"/files/{file_id}/info")
+            info_resp.raise_for_status()
+            info = info_resp.json()
+
+            size = int(info.get("size") or 0)
+            if size > max_bytes:
+                logger.info(
+                    "Skipping file %s (%d bytes): exceeds max_bytes=%d",
+                    file_id,
+                    size,
+                    max_bytes,
+                )
+                continue
+
+            mime_type = (info.get("mime_type") or "").lower()
+            name = info.get("name") or info.get("client_side_file_name") or file_id
+
+            file_resp = await http.get(f"/files/{file_id}")
+            file_resp.raise_for_status()
+            content = file_resp.content
+
+            text = None
+            # PDF
+            if mime_type == "application/pdf" or name.lower().endswith(".pdf"):
+                try:
+                    doc = fitz.open(stream=content, filetype="pdf")
+                    pages = []
+                    for p in doc:
+                        pages.append(p.get_text())
+                    text = "\n\n".join(pages).strip()
+                except Exception as e:
+                    logger.warning("Failed to extract PDF text from %s: %s", name, e)
+
+            # PowerPoint
+            elif mime_type in ("application/vnd.openxmlformats-officedocument.presentationml.presentation",) or name.lower().endswith(('.pptx', '.ppt')):
+                try:
+                    prs = Presentation(io.BytesIO(content))
+                    slides = []
+                    for slide in prs.slides:
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text"):
+                                slides.append(shape.text)
+                    text = "\n\n".join(slides).strip()
+                except Exception as e:
+                    logger.warning("Failed to extract PPTX text from %s: %s", name, e)
+
+            # Word
+            elif mime_type in ("application/vnd.openxmlformats-officedocument.wordprocessingml.document",) or name.lower().endswith(('.docx', '.doc')):
+                try:
+                    docx = Document(io.BytesIO(content))
+                    paras = [p.text for p in docx.paragraphs if p.text]
+                    text = "\n\n".join(paras).strip()
+                except Exception as e:
+                    logger.warning("Failed to extract DOCX text from %s: %s", name, e)
+
+            # Plain text
+            elif mime_type.startswith("text/") or name.lower().endswith(('.txt', '.md')):
+                try:
+                    text = content.decode('utf-8', errors='replace').strip()
+                except Exception as e:
+                    logger.warning("Failed to decode text file %s: %s", name, e)
+
+            # If we got text, append as a part
+            if text:
+                text_parts.append({
+                    "type": "text_part",
+                    "filename": name,
+                    "text": text,
+                })
+
+        except Exception as e:
+            logger.warning("Failed to process attachment %s for text extraction: %s", file_id, e)
+
+    return text_parts
 
 
 # ── Channel metadata ────────────────────────────────────────────────────────

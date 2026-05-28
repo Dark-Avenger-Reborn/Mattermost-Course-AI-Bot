@@ -21,7 +21,7 @@ from mattermostdriver import Driver
 
 import config
 from bot import responder
-from bot.channel_reader import build_image_inputs_from_file_ids
+from bot.channel_reader import build_image_inputs_from_file_ids, build_text_inputs_from_file_ids
 from llm.prompts import HELP_MESSAGE
 
 logger = logging.getLogger(__name__)
@@ -215,18 +215,31 @@ async def _handle_post(event: dict):
 
         # Extract image attachments (screenshots, photos, diagrams) for multimodal models.
         image_inputs: list[dict] = []
-        if config.MM_ENABLE_IMAGE_INPUT and file_ids:
-            image_inputs = await build_image_inputs_from_file_ids(
-                file_ids,
-                max_images=config.MM_MAX_IMAGES_PER_MESSAGE,
-                max_image_bytes=config.MM_MAX_IMAGE_BYTES,
-            )
+        text_inputs: list[dict] = []
+        if file_ids:
+            if config.MM_ENABLE_IMAGE_INPUT:
+                image_inputs = await build_image_inputs_from_file_ids(
+                    file_ids,
+                    max_images=config.MM_MAX_IMAGES_PER_MESSAGE,
+                    max_image_bytes=config.MM_MAX_IMAGE_BYTES,
+                )
+
+            # Also attempt to extract text from attachments (PDF/PPTX/DOCX/TXT)
+            try:
+                text_inputs = await build_text_inputs_from_file_ids(
+                    file_ids,
+                    max_files=3,
+                    max_bytes=config.MM_MAX_IMAGE_BYTES * 2,
+                )
+            except Exception:
+                logger.exception("Text extraction from attachments failed")
 
         # Generate response
         answer = await responder.generate_response(
             question=question,
             conversation_history=conversation_history,
             image_inputs=image_inputs,
+            text_inputs=text_inputs,
         )
 
         # Reply in thread
