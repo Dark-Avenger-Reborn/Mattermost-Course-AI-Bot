@@ -99,6 +99,12 @@ The bot can pass attached images (screenshots, photos, diagrams) to a multimodal
 - The bot converts images to data URLs and includes them in the chat request
 - Non-image files are ignored
 
+### Accepted Attachment Types
+
+- **Images:** any image MIME type (`image/*`) — e.g. `.png`, `.jpg`, `.jpeg`, `.gif`, `.bmp`, `.svg`, `.ico`, `.webp`. Images are converted to data URLs and included in the chat request for multimodal models. Controlled by `MM_ENABLE_IMAGE_INPUT`, `MM_MAX_IMAGES_PER_MESSAGE`, and `MM_MAX_IMAGE_BYTES`.
+- **Documents (text extraction):** `.pdf`, `.pptx`, `.ppt`, `.docx`, `.doc`, `.txt`, `.md` — the bot will attempt to extract text from these attachments and include the extracted text in the prompt. The bot also attempts other text-readable files (CSV/JSON/HTML/source code) when possible. Text extraction is limited (default: up to 3 files per message, with size limits).
+- **Ignored / Not used for ingestion:** audio/video, archives, executables, and other binary media (e.g. `.mp3`, `.mp4`, `.zip`, `.exe`) are skipped for text ingestion. Non-image attachments that are not text-extractable will be ignored.
+
 Environment variables:
 
 - `MM_ENABLE_IMAGE_INPUT` (default: `true`)
