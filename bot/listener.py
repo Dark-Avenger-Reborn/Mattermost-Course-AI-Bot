@@ -15,9 +15,11 @@ Architecture note:
 import asyncio
 import logging
 import re
+import ssl
 import threading
 
 from mattermostdriver import Driver
+import mattermostdriver.websocket as mm_websocket
 
 import config
 from bot import responder
@@ -31,11 +33,32 @@ _driver: Driver | None = None
 _bot_user_id: str = ""
 _bot_username: str = ""
 _main_loop: asyncio.AbstractEventLoop | None = None  # the main asyncio loop
+_ssl_context_patched = False
+
+
+def _patch_mattermostdriver_ssl_context() -> None:
+    global _ssl_context_patched
+
+    if _ssl_context_patched:
+        return
+
+    original_create_default_context = mm_websocket.ssl.create_default_context
+
+    def _create_default_context(*args, **kwargs):
+        purpose = kwargs.get("purpose")
+        if purpose is ssl.Purpose.CLIENT_AUTH:
+            kwargs = dict(kwargs)
+            kwargs["purpose"] = ssl.Purpose.SERVER_AUTH
+        return original_create_default_context(*args, **kwargs)
+
+    mm_websocket.ssl.create_default_context = _create_default_context
+    _ssl_context_patched = True
 
 
 def get_driver() -> Driver:
     global _driver
     if _driver is None:
+        _patch_mattermostdriver_ssl_context()
         parsed = _parse_url(config.MM_URL)
         _driver = Driver({
             "url": parsed["host"],
